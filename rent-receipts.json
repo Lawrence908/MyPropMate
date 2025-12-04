@@ -1,0 +1,711 @@
+{
+  "name": "Rent Receipts v3: Interac \u2192 Validate \u2192 PDF \u2192 Email \u2192 Log (+Folder Scan, +Telegram OK/\u26a0\ufe0f)",
+  "nodes": [
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "watch",
+        "labelIds": [
+          "INBOX"
+        ],
+        "query": "to:c.lawrence908@gmail.com subject:\"Interac e-Transfer: You've received\" (from:notify@payments.interac.ca OR from:cibc.com)",
+        "downloadAttachments": false
+      },
+      "type": "n8n-nodes-base.gmailTrigger",
+      "typeVersion": 2,
+      "position": [
+        -1680,
+        -10
+      ],
+      "name": "Gmail: New Interac Deposit",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "Gmail OAuth (Personal)",
+          "name": "Gmail OAuth (Personal)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "functionCode": "// Parse Interac/CIBC deposit email\nconst msg = $json;\nconst subject = (msg.subject||\"\").trim();\nconst body = (msg.textHtml||msg.text||\"\").replace(/<[^>]+>/g,' ').replace(/\\s+/g,' ').trim();\nconst amtMatch = subject.match(/You've received \\$([0-9,]+\\.[0-9]{2})/i);\nconst amount = amtMatch? parseFloat(amtMatch[1].replace(/,/g,'')) : null;\nconst fromNameMatch = subject.match(/from\\s+(.+)$/i);\nfunction tc(s){return s.toLowerCase().replace(/\\b\\w/g,c=>c.toUpperCase()).replace(/\\s+/g,' ').trim();}\nconst senderName = fromNameMatch? tc(fromNameMatch[1]) : null;\nconst msgMatch = body.match(/Message:\\s*([^D]+?)\\s*(?:Date:|Reference|Sent From:|Amount:)/i);\nconst messageLine = msgMatch? msgMatch[1].trim():'';\nconst dateMatch = body.match(/Date:\\s*([A-Za-z]{3,}\\s*\\d{1,2},\\s*\\d{4})/i);\nconst emailDateStr = dateMatch? dateMatch[1]:null;\nconst emailDate = emailDateStr? new Date(emailDateStr): new Date(msg.date || Date.now());\nreturn [{json:{subject, body, amount, senderName, messageLine, emailDateISO: emailDate.toISOString()}}];"
+      },
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 2,
+      "position": [
+        -1460,
+        -10
+      ],
+      "name": "Parse CIBC Email"
+    },
+    {
+      "parameters": {
+        "operation": "lookup",
+        "sheetId": "={{$env.TENANTS_SHEET_ID}}",
+        "range": "TenantsAndInvoices!A:I",
+        "options": {
+          "returnAllMatches": true
+        },
+        "lookupColumn": "tenant_name",
+        "lookupValue": "={{$json[\"senderName\"]}}"
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [
+        -1240,
+        -120
+      ],
+      "name": "Find Tenant by Name",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "Google OAuth (Sheets/Drive)",
+          "name": "Google OAuth (Sheets/Drive)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "functionCode": "// Validate amount against sheet row\nif (!items.length || !items[0].json || !items[0].json.data) {\n  return [{json:{matchFound:false, reason:'Tenant not found in sheet'}}];\n}\nconst tenant = $items(\"Find Tenant by Name\",0,0).json.data[0];\nconst amount = $items(\"Parse CIBC Email\",0,0).json.amount;\nconst tol=0.01;\nconst expected = tenant.expected_amount? parseFloat(tenant.expected_amount): parseFloat(tenant.monthly_rent);\nconst parking = tenant.parking_fee? parseFloat(tenant.parking_fee): 0;\nconst okAmount = Math.abs(amount-expected) <= tol;\nreturn [{json:{matchFound:true, okAmount, amount, expected, parking, tenant}}];"
+      },
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 2,
+      "position": [
+        -1040,
+        -10
+      ],
+      "name": "Validate vs Sheet"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{$json[\"matchFound\"]}}"
+            },
+            {
+              "value1": "={{$json[\"okAmount\"]}}"
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -840,
+        -10
+      ],
+      "name": "All Good?"
+    },
+    {
+      "parameters": {
+        "toEmail": "c.lawrence908@gmail.com",
+        "subject": "Rent receipt flow needs review",
+        "message": "Issue: {{$json.reason || (\"amount mismatch: received $\" + $json.amount + \" expected $\" + $json.expected)}}\\nSender: {{$items(\"Parse CIBC Email\",0,0).json.senderName}}\\nSubject: {{$items(\"Parse CIBC Email\",0,0).json.subject}}"
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2,
+      "position": [
+        -620,
+        150
+      ],
+      "name": "Email Me: Needs Review",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "Gmail OAuth (Personal)",
+          "name": "Gmail OAuth (Personal)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "chatId": "={{$env.TELEGRAM_CHAT_ID}}",
+        "text": "\u26a0\ufe0f Rent receipt needs review \u2014 Sender: {{$items(\"Parse CIBC Email\",0,0).json.senderName}} \u2014 Amount: ${{$json.amount}} \u2014 Reason: {{$json.reason || 'Mismatch/Unknown'}}"
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1,
+      "position": [
+        -420,
+        150
+      ],
+      "name": "Telegram Alert (\u26a0\ufe0f)",
+      "credentials": {
+        "telegramApi": {
+          "id": "Telegram Bot (Alerts)",
+          "name": "Telegram Bot (Alerts)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "functionCode": "// Prepare base fields + sheet-derived next number & next month\nconst t = $json.tenant;\nconst emailDateISO = $items(\"Parse CIBC Email\",0,0).json.emailDateISO;\nconst emailDate = new Date(emailDateISO);\nlet period = $items(\"Parse CIBC Email\",0,0).json.messageLine || t.next_due_month;\nif (period) period = period.replace(/rent\\s*/i,'').trim();\nconst lastNo = t.last_invoice_no? parseInt(t.last_invoice_no,10):0;\nconst sheetNextNo = (isNaN(lastNo)?0:lastNo)+1;\nconst parts=(t.tenant_name||'').trim().split(/\\s+/); const lastName=parts[parts.length-1];\nfunction bumpMonth(ym){ if(!ym) return ym; const [y,m]=ym.split('-').map(Number); const d=new Date(Date.UTC(y,(m-1)+1,1)); const ny=d.getUTCFullYear(); const nm=String(d.getUTCMonth()+1).padStart(2,'0'); return `${ny}-${nm}`; }\nconst bumpedNextDue=bumpMonth(t.next_due_month);\nreturn [{json:{tenant:t, receiptDateISO:emailDate.toISOString(), periodText:period, sheetNextNo, lastName, bumpedNextDue}}];"
+      },
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 2,
+      "position": [
+        -620,
+        -200
+      ],
+      "name": "Assemble Receipt Fields (Base)"
+    },
+    {
+      "parameters": {
+        "operation": "search",
+        "query": "name = '1030 10A St - Receipts' and mimeType = 'application/vnd.google-apps.folder'"
+      },
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        -420,
+        -200
+      ],
+      "name": "Find Root Folder",
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "Google OAuth (Sheets/Drive)",
+          "name": "Google OAuth (Sheets/Drive)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "search",
+        "query": "={{\"name = '\" + $json.lastName + \"' and mimeType = 'application/vnd.google-apps.folder' and '\" + $item(1).$node[\\\"Find Root Folder\\\"].json.files[0].id + \"' in parents\"}}"
+      },
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        -210,
+        -200
+      ],
+      "name": "Find Tenant Folder",
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "Google OAuth (Sheets/Drive)",
+          "name": "Google OAuth (Sheets/Drive)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "list",
+        "query": "={{\"mimeType = 'application/pdf' and name contains 'Rental Receipt - \" + $item(0).$node[\\\"Assemble Receipt Fields (Base)\\\"].json.lastName + \"-' and '\" + $json.files[0].id + \"' in parents\"}}",
+        "options": {
+          "pageSize": 1000
+        }
+      },
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        10,
+        -200
+      ],
+      "name": "List Existing PDFs (Tenant)",
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "Google OAuth (Sheets/Drive)",
+          "name": "Google OAuth (Sheets/Drive)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "functionCode": "// Decide final invoice number using folder scan\nconst base = $items(\"Assemble Receipt Fields (Base)\",0,0).json;\nconst sheetNextNo = base.sheetNextNo;\nconst files = $json.files || [];\nlet folderMax = 0;\nconst re = /-\\s*(\\d{3})\\.pdf$/i;\nfor (const f of files){ const m = f.name.match(re); if(m){ const n=parseInt(m[1],10); if(n>folderMax) folderMax=n; } }\nconst finalNo = Math.max(sheetNextNo, folderMax+1);\nconst fileSuffix = String(finalNo).padStart(3,'0');\nreturn [{json:{...base, finalInvoiceNo: finalNo, fileSuffix}}];"
+      },
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 2,
+      "position": [
+        210,
+        -200
+      ],
+      "name": "Compute Final Invoice No"
+    },
+    {
+      "parameters": {
+        "operation": "search",
+        "query": "={{\"name = 'Rental Receipt - \" + $json.lastName + \"' and mimeType = 'application/vnd.google-apps.spreadsheet' and '\" + $item(2).$node[\\\"Find Tenant Folder\\\"].json.files[0].id + \"' in parents\"}}"
+      },
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        420,
+        -200
+      ],
+      "name": "Find Template Sheet",
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "Google OAuth (Sheets/Drive)",
+          "name": "Google OAuth (Sheets/Drive)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "copy",
+        "fileId": "={{$json.files[0].id}}",
+        "options": {
+          "fileName": "={{\"Rental Receipt - \" + $item(1).$node[\"Compute Final Invoice No\"].json.lastName + \" (Working)\"}}",
+          "parents": "={{$item(2).$node[\"Find Tenant Folder\"].json.files[0].id}}"
+        }
+      },
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        630,
+        -200
+      ],
+      "name": "Copy Template \u2192 Working",
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "Google OAuth (Sheets/Drive)",
+          "name": "Google OAuth (Sheets/Drive)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "sheetId": "={{$json.id}}",
+        "range": "NamedRanges",
+        "options": {
+          "valueInputMode": "USER_ENTERED",
+          "dataMode": "raw",
+          "updateValues": [
+            {
+              "range": "TENANT_NAME",
+              "values": "={{$item(1).$node[\"Compute Final Invoice No\"].json.tenant.tenant_name}}"
+            },
+            {
+              "range": "UNIT",
+              "values": "={{$item(1).$node[\"Compute Final Invoice No\"].json.tenant.unit}}"
+            },
+            {
+              "range": "INVOICE_NO",
+              "values": "={{$item(1).$node[\"Compute Final Invoice No\"].json.finalInvoiceNo}}"
+            },
+            {
+              "range": "RECEIPT_DATE",
+              "values": "={{$item(1).$node[\"Compute Final Invoice No\"].json.receiptDateISO}}"
+            },
+            {
+              "range": "PERIOD_TEXT",
+              "values": "={{$item(1).$node[\"Compute Final Invoice No\"].json.periodText}}"
+            },
+            {
+              "range": "AMOUNT_RENT",
+              "values": "={{$items(\"Validate vs Sheet\",0,0).json.expected}}"
+            },
+            {
+              "range": "AMOUNT_PARKING",
+              "values": "={{$items(\"Validate vs Sheet\",0,0).json.parking}}"
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [
+        850,
+        -200
+      ],
+      "name": "Fill Named Ranges",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "Google OAuth (Sheets/Drive)",
+          "name": "Google OAuth (Sheets/Drive)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "export",
+        "fileId": "={{$item(1).$node[\"Copy Template \u2192 Working\"].json.id}}",
+        "options": {
+          "fileName": "={{\"Rental Receipt - \" + $item(1).$node[\"Compute Final Invoice No\"].json.lastName + \"- \" + $item(1).$node[\"Compute Final Invoice No\"].json.fileSuffix + \".pdf\"}}",
+          "parents": "={{$item(2).$node[\"Find Tenant Folder\"].json.files[0].id}}",
+          "mimeType": "application/pdf"
+        }
+      },
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        1090,
+        -200
+      ],
+      "name": "Export PDF into Folder",
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "Google OAuth (Sheets/Drive)",
+          "name": "Google OAuth (Sheets/Drive)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "delete",
+        "fileId": "={{$item(1).$node[\"Copy Template \u2192 Working\"].json.id}}"
+      },
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        1300,
+        -200
+      ],
+      "name": "Cleanup Working Copy",
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "Google OAuth (Sheets/Drive)",
+          "name": "Google OAuth (Sheets/Drive)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "toEmail": "={{$item(1).$node[\"Compute Final Invoice No\"].json.tenant.tenant_email}}",
+        "subject": "={{\"Rent Receipt \u2014 \" + $item(1).$node[\"Compute Final Invoice No\"].json.periodText + \" \u2014 \" + $item(1).$node[\"Compute Final Invoice No\"].json.lastName}}",
+        "message": "Hi {{$item(1).$node[\"Compute Final Invoice No\"].json.tenant.tenant_name}},\\n\\nThanks for your rent payment. Your receipt for {{$item(1).$node[\"Compute Final Invoice No\"].json.periodText}} is attached as a PDF.\\n\\n\u2014 Chris\\nLawrence Rentals",
+        "additionalFields": {
+          "attachmentsUi": {
+            "attachmentsBinary": [
+              {
+                "property": "data"
+              }
+            ]
+          }
+        }
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2,
+      "position": [
+        1510,
+        -200
+      ],
+      "name": "Send Receipt (Gmail)",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "Gmail OAuth (Personal)",
+          "name": "Gmail OAuth (Personal)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "functionCode": "return [{json:{\n  Date: $item(1).$node[\"Compute Final Invoice No\"].json.receiptDateISO,\n  Tenant: $item(1).$node[\"Compute Final Invoice No\"].json.tenant.tenant_name,\n  Period: $item(1).$node[\"Compute Final Invoice No\"].json.periodText,\n  Amount: $items(\"Validate vs Sheet\",0,0).json.expected,\n  Parking: $items(\"Validate vs Sheet\",0,0).json.parking,\n  InvoiceNo: $item(1).$node[\"Compute Final Invoice No\"].json.finalInvoiceNo,\n  File: $item(1).$node[\"Export PDF into Folder\"].json.name,\n  Email: $item(1).$node[\"Compute Final Invoice No\"].json.tenant.tenant_email\n}}];"
+      },
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 2,
+      "position": [
+        1510,
+        -380
+      ],
+      "name": "Build Log Row"
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "sheetId": "={{$env.TENANTS_SHEET_ID}}",
+        "range": "PaymentsLog!A:H",
+        "options": {
+          "valueInputMode": "USER_ENTERED"
+        },
+        "fields": "Date,Tenant,Period,Amount,Parking,InvoiceNo,File,Email"
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [
+        1730,
+        -200
+      ],
+      "name": "Log Row (PaymentsLog)",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "Google OAuth (Sheets/Drive)",
+          "name": "Google OAuth (Sheets/Drive)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "sheetId": "={{$env.TENANTS_SHEET_ID}}",
+        "range": "TenantsAndInvoices!A:I",
+        "key": "tenant_id",
+        "options": {
+          "valueInputMode": "USER_ENTERED",
+          "updateRows": [
+            {
+              "keyValue": "={{$item(1).$node[\"Compute Final Invoice No\"].json.tenant.tenant_id}}",
+              "fields": {
+                "last_invoice_no": "={{$item(1).$node[\"Compute Final Invoice No\"].json.finalInvoiceNo}}",
+                "next_due_month": "={{$item(1).$node[\"Compute Final Invoice No\"].json.bumpedNextDue}}"
+              }
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [
+        1960,
+        -200
+      ],
+      "name": "Update Sheet: Auto-Increment",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "Google OAuth (Sheets/Drive)",
+          "name": "Google OAuth (Sheets/Drive)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "chatId": "={{$env.TELEGRAM_CHAT_ID}}",
+        "text": "\u2705 Rent receipt sent \u2014 {{$item(1).$node[\"Compute Final Invoice No\"].json.tenant.tenant_name}} | Period: {{$item(1).$node[\"Compute Final Invoice No\"].json.periodText}} | Invoice #: {{$item(1).$node[\"Compute Final Invoice No\"].json.finalInvoiceNo}} | File: {{$item(1).$node[\"Export PDF into Folder\"].json.name}}"
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1,
+      "position": [
+        2180,
+        -200
+      ],
+      "name": "Telegram Success (\u2705)",
+      "credentials": {
+        "telegramApi": {
+          "id": "Telegram Bot (Alerts)",
+          "name": "Telegram Bot (Alerts)"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Gmail: New Interac Deposit": {
+      "main": [
+        [
+          {
+            "node": "Parse CIBC Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse CIBC Email": {
+      "main": [
+        [
+          {
+            "node": "Find Tenant by Name",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find Tenant by Name": {
+      "main": [
+        [
+          {
+            "node": "Validate vs Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate vs Sheet": {
+      "main": [
+        [
+          {
+            "node": "All Good?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "All Good?": {
+      "main": [
+        [
+          {
+            "node": "Assemble Receipt Fields (Base)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Email Me: Needs Review",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Email Me: Needs Review": {
+      "main": [
+        [
+          {
+            "node": "Telegram Alert (\u26a0\ufe0f)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Assemble Receipt Fields (Base)": {
+      "main": [
+        [
+          {
+            "node": "Find Root Folder",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find Root Folder": {
+      "main": [
+        [
+          {
+            "node": "Find Tenant Folder",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find Tenant Folder": {
+      "main": [
+        [
+          {
+            "node": "List Existing PDFs (Tenant)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "List Existing PDFs (Tenant)": {
+      "main": [
+        [
+          {
+            "node": "Compute Final Invoice No",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Compute Final Invoice No": {
+      "main": [
+        [
+          {
+            "node": "Find Template Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find Template Sheet": {
+      "main": [
+        [
+          {
+            "node": "Copy Template \u2192 Working",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Copy Template \u2192 Working": {
+      "main": [
+        [
+          {
+            "node": "Fill Named Ranges",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fill Named Ranges": {
+      "main": [
+        [
+          {
+            "node": "Export PDF into Folder",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Export PDF into Folder": {
+      "main": [
+        [
+          {
+            "node": "Cleanup Working Copy",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cleanup Working Copy": {
+      "main": [
+        [
+          {
+            "node": "Send Receipt (Gmail)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Log Row",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Build Log Row": {
+      "main": [
+        [
+          {
+            "node": "Log Row (PaymentsLog)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Row (PaymentsLog)": {
+      "main": [
+        [
+          {
+            "node": "Update Sheet: Auto-Increment",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Sheet: Auto-Increment": {
+      "main": [
+        [
+          {
+            "node": "Telegram Success (\u2705)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "timezone": "America/Edmonton"
+  },
+  "meta": {
+    "instanceId": "rent-receipts-interac-v3"
+  },
+  "pinData": {}
+}

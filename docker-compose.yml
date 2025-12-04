@@ -1,0 +1,32 @@
+version: "3.8"
+
+services:
+  # ===================
+  # MyPropMate API
+  # ===================
+  mypropmate-api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: mypropmate-api
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - SUPABASE_URL=${SUPABASE_URL}
+      - SUPABASE_KEY=${SUPABASE_KEY}
+      - GMAIL_CREDENTIALS_PATH=/app/credentials/gmail_credentials.json
+      - GMAIL_TOKEN_PATH=/app/credentials/gmail_token.json
+      - GMAIL_WATCH_EMAIL=${GMAIL_WATCH_EMAIL}
+      - INVOICENINJA_URL=${INVOICENINJA_URL}
+      - INVOICENINJA_API_KEY=${INVOICENINJA_API_KEY}
+      - LANDLORD_EMAIL=${LANDLORD_EMAIL}
+      - POLL_INTERVAL_MINUTES=${POLL_INTERVAL_MINUTES:-5}
+    volumes:
+      - ./credentials:/app/credentials:ro
+    networks:
+      - mypropmate-network
+
+networks:
+  mypropmate-network:
+    driver: bridge
