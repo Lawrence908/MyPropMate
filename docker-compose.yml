@@ -1,5 +1,3 @@
-version: "3.8"
-
 services:
   # ===================
   # MyPropMate API
@@ -26,10 +24,7 @@ services:
       - ./credentials:/app/credentials:ro
     networks:
       - mypropmate-network
-      - homelab-web
 
 networks:
   mypropmate-network:
-    driver: bridge
-  homelab-web:
     driver: bridge
