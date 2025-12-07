@@ -135,3 +135,5 @@ class InvoiceNinjaInvoice(BaseModel):
     status: str
     public_url: Optional[str] = None
 
+
+

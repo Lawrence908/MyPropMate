@@ -192,3 +192,5 @@ def get_supabase() -> SupabaseClient:
         _supabase_client = SupabaseClient()
     return _supabase_client
 
+
+
