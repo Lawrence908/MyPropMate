@@ -36,5 +36,11 @@ Thumbs.db
 # Excel templates (keep originals, ignore generated)
 Updated_*.xlsx
 
+# Pipeline runtime data (keep the .example seed, ignore real data + outputs)
+backend/data/*.db
+backend/data/tenants.json
+receipts/
+backend/receipts/
+
 # Old files
 *.lnk

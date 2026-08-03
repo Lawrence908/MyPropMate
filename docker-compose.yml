@@ -10,18 +10,24 @@ services:
     restart: unless-stopped
     ports:
       - "8000:8000"
+    # All secrets/config come from the repo-root .env (IMAP_*, SMTP_*, etc.).
+    env_file:
+      - .env
     environment:
-      - SUPABASE_URL=${SUPABASE_URL}
-      - SUPABASE_KEY=${SUPABASE_KEY}
-      - GMAIL_CREDENTIALS_PATH=/app/credentials/gmail_credentials.json
-      - GMAIL_TOKEN_PATH=/app/credentials/gmail_token.json
-      - GMAIL_WATCH_EMAIL=${GMAIL_WATCH_EMAIL}
-      - INVOICENINJA_URL=${INVOICENINJA_URL}
-      - INVOICENINJA_API_KEY=${INVOICENINJA_API_KEY}
-      - LANDLORD_EMAIL=${LANDLORD_EMAIL}
+      # Container paths (match Settings defaults; kept explicit for clarity).
+      - TEMPLATE_PATH=/app/templates/rental_receipt_template.xlsx
+      - RECEIPTS_DIR=/app/receipts
+      - DB_PATH=/app/data/mypropmate.db
+      - TENANTS_SEED_PATH=/app/data/tenants.json
+      - SOFFICE_BIN=soffice
       - POLL_INTERVAL_MINUTES=${POLL_INTERVAL_MINUTES:-5}
     volumes:
-      - ./credentials:/app/credentials:ro
+      # Persist the SQLite DB and host-edit tenants.json here.
+      - ./backend/data:/app/data
+      # Generated receipts (xlsx + pdf) land on the host.
+      - ./receipts:/app/receipts
+      # Edit the receipt template without rebuilding the image.
+      - ./backend/templates:/app/templates:ro
     networks:
       - mypropmate-network
 

@@ -2,26 +2,28 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install system dependencies
+# System deps:
+#   gcc              - build wheels if needed
+#   libreoffice-calc - headless xlsx -> pdf receipt rendering
+#   fonts-liberation - fonts so rendered PDFs look right
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
+    libreoffice-calc \
+    fonts-liberation \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements first for caching
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy application code
+# Application code, receipt template, and seed data
 COPY app/ ./app/
+COPY templates/ ./templates/
+COPY data/ ./data/
 
-# Create credentials directory
-RUN mkdir -p /app/credentials
+# Runtime dirs (mounted as volumes in compose so state persists)
+RUN mkdir -p /app/credentials /app/receipts /app/data
 
-# Expose port
 EXPOSE 8000
 
-# Run the application
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
-
-
-

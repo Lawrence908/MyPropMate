@@ -1,0 +1,27 @@
+[
+  {
+    "display_name": "Rick Hilsendeger",
+    "match_name": "rick hilsendeger",
+    "monthly_rent": 650,
+    "parking_fee": 0,
+    "phone": "",
+    "email": "",
+    "last_invoice_no": 0
+  },
+  {
+    "display_name": "Pete Neumann",
+    "monthly_rent": 1100,
+    "parking_fee": 0,
+    "phone": "(780) 267-5208",
+    "email": "",
+    "last_invoice_no": 0
+  },
+  {
+    "display_name": "Laurent Charette",
+    "monthly_rent": 1100,
+    "parking_fee": 0,
+    "phone": "",
+    "email": "",
+    "last_invoice_no": 0
+  }
+]
