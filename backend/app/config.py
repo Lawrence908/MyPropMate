@@ -32,6 +32,13 @@ class Settings(BaseSettings):
     tenants_seed_path: str = "/app/data/tenants.json"
     soffice_bin: str = "soffice"
 
+    # --- Telegram confirm-to-send flow ---
+    # When enabled, a poll renders receipts and asks for confirmation in Telegram
+    # instead of emailing automatically.
+    telegram_enabled: bool = False
+    telegram_bot_token: str = ""
+    telegram_chat_id: str = ""
+
     # Where to send validation/error notifications
     landlord_email: str = "c.lawrence908@gmail.com"
 

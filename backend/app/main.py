@@ -1,12 +1,19 @@
 """MyPropMate FastAPI entry point.
 
 Drives the active pipeline: IMAP -> parse -> SQLite -> Excel/PDF -> SMTP.
-The processor is synchronous (blocking IMAP + LibreOffice), so scheduled and
-request-triggered runs are offloaded to a worker thread.
+
+Two operating modes:
+  * Telegram off: a poll preps AND emails receipts automatically.
+  * Telegram on:  a poll preps receipts and asks for confirmation in Telegram;
+    receipts are only emailed when you tap "Confirm & Send".
+
+The processor is synchronous (blocking IMAP + LibreOffice + SMTP), so all of its
+calls are offloaded to worker threads.
 """
 
 import asyncio
 from contextlib import asynccontextmanager
+from typing import Optional
 
 from fastapi import Depends, FastAPI
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -14,13 +21,13 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from app.config import Settings, get_settings
 from app.pipeline.processor import PaymentProcessor
 from app.pipeline.store import Store, seed_from_json
+from app.pipeline.telegram import TelegramBot
 
 
 scheduler = AsyncIOScheduler()
 
 
 def get_store(settings: Settings = Depends(get_settings)) -> Store:
-    """Per-request SQLite store (cheap to open; closed after the request)."""
     store = Store(settings.db_path)
     try:
         yield store
@@ -28,11 +35,74 @@ def get_store(settings: Settings = Depends(get_settings)) -> Store:
         store.close()
 
 
+def _build_bot(settings: Settings) -> Optional[TelegramBot]:
+    if settings.telegram_enabled and settings.telegram_bot_token and settings.telegram_chat_id:
+        return TelegramBot(settings.telegram_bot_token, settings.telegram_chat_id)
+    return None
+
+
+async def _prep_and_notify(processor: PaymentProcessor, bot: TelegramBot) -> None:
+    """Prep new payments (no email) and post each to Telegram for confirmation."""
+    summary = await asyncio.to_thread(processor.process_new_payments, send_email=False)
+    for d in summary["details"]:
+        try:
+            if d.get("receipt") and d.get("invoice_no") is not None:
+                await asyncio.to_thread(bot.send_payment_notification, d)
+            elif "failed" in d:
+                await asyncio.to_thread(
+                    bot.send_message,
+                    f"⚠️ Payment needs attention\nRef <code>{d.get('ref')}</code>\n{d['failed']}",
+                )
+        except Exception as exc:
+            print(f"Telegram notify error for {d.get('ref')}: {exc}")
+    if summary["processed"] or summary["failed"]:
+        print(f"Prep: {summary['processed']} awaiting confirmation, {summary['failed']} flagged")
+
+
+def _handle_callback(processor: PaymentProcessor, bot: TelegramBot, cq: dict) -> None:
+    data = cq.get("data", "")
+    message_id = cq.get("message", {}).get("message_id")
+    no_buttons = {"inline_keyboard": []}
+    action, _, ref = data.partition(":")
+    if action == "confirm":
+        res = processor.send_one(ref)
+        if res.get("status") == "sent":
+            bot.answer_callback(cq["id"], "Receipt sent ✅")
+            caption = f"✅ Sent to {res['to']}"
+        else:
+            bot.answer_callback(cq["id"], f"Not sent: {res.get('status')}")
+            caption = f"ℹ️ {res.get('status')}"
+        if message_id:
+            bot.edit_caption(message_id, caption, reply_markup=no_buttons)
+    elif action == "hold":
+        bot.answer_callback(cq["id"], "Held ⏸")
+        if message_id:
+            bot.edit_caption(message_id, "⏸ Held — not sent", reply_markup=no_buttons)
+
+
+async def _telegram_listener(processor: PaymentProcessor, bot: TelegramBot) -> None:
+    """Long-poll Telegram for Confirm/Hold taps until cancelled."""
+    offset: Optional[int] = None
+    print("Telegram listener started")
+    while True:
+        try:
+            updates = await asyncio.to_thread(bot.get_updates, offset, 25)
+            for upd in updates:
+                offset = upd["update_id"] + 1
+                cq = upd.get("callback_query")
+                if cq:
+                    await asyncio.to_thread(_handle_callback, processor, bot, cq)
+        except asyncio.CancelledError:
+            break
+        except Exception as exc:
+            print(f"Telegram listener error: {exc}")
+            await asyncio.sleep(5)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = get_settings()
 
-    # Seed tenants from the JSON file on startup.
     store = Store(settings.db_path)
     try:
         n = seed_from_json(store, settings.tenants_seed_path)
@@ -41,35 +111,55 @@ async def lifespan(app: FastAPI):
         store.close()
 
     processor = PaymentProcessor(settings)
+    bot = _build_bot(settings)
+    app.state.processor = processor
+    app.state.bot = bot
 
-    async def poll_inbox():
+    listener_task = None
+    if bot is not None:
         try:
-            summary = await asyncio.to_thread(processor.process_new_payments)
-            print(f"Poll complete: {summary['processed']} processed, "
-                  f"{summary['skipped']} skipped, {summary['failed']} failed")
-        except Exception as exc:  # keep the scheduler alive
-            print(f"Error polling inbox: {exc}")
+            me = await asyncio.to_thread(bot.get_me)
+            print(f"Telegram bot connected: @{me['result']['username']}")
+            await asyncio.to_thread(bot.send_message, "\U0001f7e2 MyPropMate is online.")
+        except Exception as exc:
+            print(f"Telegram connect failed: {exc}")
+        listener_task = asyncio.create_task(_telegram_listener(processor, bot))
+
+    async def poll_job():
+        try:
+            if bot is not None:
+                await _prep_and_notify(processor, bot)
+            else:
+                summary = await asyncio.to_thread(processor.process_new_payments)
+                print(f"Poll: {summary['processed']} processed, "
+                      f"{summary['skipped']} skipped, {summary['failed']} failed")
+        except Exception as exc:
+            print(f"Error in poll job: {exc}")
 
     scheduler.add_job(
-        poll_inbox,
-        "interval",
-        minutes=settings.poll_interval_minutes,
-        id="inbox_poll",
-        replace_existing=True,
+        poll_job, "interval", minutes=settings.poll_interval_minutes,
+        id="inbox_poll", replace_existing=True,
     )
     scheduler.start()
-    print(f"Started inbox polling every {settings.poll_interval_minutes} minutes")
+    print(f"Started inbox polling every {settings.poll_interval_minutes} minutes "
+          f"({'Telegram confirm' if bot else 'auto-send'} mode)")
 
     yield
 
     scheduler.shutdown()
+    if listener_task is not None:
+        listener_task.cancel()
+        try:
+            await listener_task
+        except asyncio.CancelledError:
+            pass
     print("Scheduler shut down")
 
 
 app = FastAPI(
     title="MyPropMate API",
     description="Rent receipt automation (IMAP -> Excel/PDF -> SMTP)",
-    version="0.2.0",
+    version="0.3.0",
     lifespan=lifespan,
 )
 
@@ -81,7 +171,7 @@ async def health_check():
 
 @app.get("/")
 async def root():
-    return {"name": "MyPropMate API", "version": "0.2.0", "docs": "/docs"}
+    return {"name": "MyPropMate API", "version": "0.3.0", "docs": "/docs"}
 
 
 @app.get("/api/tenants")
@@ -112,8 +202,12 @@ async def reseed_tenants(
 
 
 @app.post("/api/payments/process")
-async def trigger_payment_processing(settings: Settings = Depends(get_settings)):
-    """Run one poll immediately (offloaded to a worker thread)."""
-    processor = PaymentProcessor(settings)
+async def trigger_payment_processing():
+    """Run one poll immediately (prep+notify in Telegram mode, else prep+send)."""
+    processor: PaymentProcessor = app.state.processor
+    bot: Optional[TelegramBot] = app.state.bot
+    if bot is not None:
+        await _prep_and_notify(processor, bot)
+        return {"status": "prepped", "mode": "telegram-confirm"}
     result = await asyncio.to_thread(processor.process_new_payments)
     return {"status": "processed", "result": result}

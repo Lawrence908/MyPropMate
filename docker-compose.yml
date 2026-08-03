@@ -14,6 +14,8 @@ services:
     env_file:
       - .env
     environment:
+      # Unbuffered stdout so lifespan/poll logs appear in `docker compose logs`.
+      - PYTHONUNBUFFERED=1
       # Container paths (match Settings defaults; kept explicit for clarity).
       - TEMPLATE_PATH=/app/templates/rental_receipt_template.xlsx
       - RECEIPTS_DIR=/app/receipts

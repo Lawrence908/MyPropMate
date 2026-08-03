@@ -208,6 +208,41 @@ class PaymentProcessor:
         finally:
             store.close()
 
+    def send_one(self, reference_number: str) -> Dict[str, Any]:
+        """Email a single prepped-but-unsent receipt by reference number.
+
+        Used by the Telegram Confirm button. Idempotent: a reference that is
+        already emailed or unknown returns a status without re-sending.
+        """
+        store = self._open_store()
+        try:
+            row = store.conn.execute(
+                """
+                SELECT p.id, p.period, p.receipt_path, p.emailed,
+                       t.display_name, t.email
+                FROM payments p JOIN tenants t ON t.id = p.tenant_id
+                WHERE p.reference_number = ? AND p.invoice_no IS NOT NULL
+                """,
+                (reference_number,),
+            ).fetchone()
+            if row is None:
+                return {"ref": reference_number, "status": "not-pending"}
+            if row["emailed"]:
+                return {"ref": reference_number, "status": "already-sent", "to": row["email"]}
+            if not row["email"]:
+                return {"ref": reference_number, "status": "no-email"}
+            self.mailer.send_receipt(
+                to_address=row["email"],
+                tenant_name=row["display_name"],
+                period=row["period"],
+                pdf_path=row["receipt_path"],
+                bcc=self.settings.landlord_email or None,
+            )
+            store.mark_emailed(row["id"], row["receipt_path"])
+            return {"ref": reference_number, "status": "sent", "to": row["email"]}
+        finally:
+            store.close()
+
     def _notify_landlord(self, payment: ParsedPayment, reason: str) -> None:
         """Best-effort landlord alert. Never blocks the pipeline."""
         if not (self.settings.landlord_email and self.settings.smtp_password):
