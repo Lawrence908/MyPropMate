@@ -8,6 +8,9 @@ services:
       dockerfile: Dockerfile
     container_name: mypropmate-api
     restart: unless-stopped
+    # Run as the host user so bind-mounted data/receipts stay chris-owned and the
+    # NFS-backed backup dir (root-squashed) is writable.
+    user: "1000:1000"
     ports:
       - "8000:8000"
     # All secrets/config come from the repo-root .env (IMAP_*, SMTP_*, etc.).
@@ -16,12 +19,17 @@ services:
     environment:
       # Unbuffered stdout so lifespan/poll logs appear in `docker compose logs`.
       - PYTHONUNBUFFERED=1
+      # Writable HOME for non-root LibreOffice.
+      - HOME=/tmp
       # Container paths (match Settings defaults; kept explicit for clarity).
       - TEMPLATE_PATH=/app/templates/rental_receipt_template.xlsx
       - RECEIPTS_DIR=/app/receipts
       - DB_PATH=/app/data/mypropmate.db
       - TENANTS_SEED_PATH=/app/data/tenants.json
       - SOFFICE_BIN=soffice
+      - BACKUP_DIR=/app/backups
+      - BACKUP_RETENTION=${BACKUP_RETENTION:-14}
+      - BACKUP_INTERVAL_HOURS=${BACKUP_INTERVAL_HOURS:-24}
       - POLL_INTERVAL_MINUTES=${POLL_INTERVAL_MINUTES:-5}
     volumes:
       # Persist the SQLite DB and host-edit tenants.json here.
@@ -30,6 +38,8 @@ services:
       - ./receipts:/app/receipts
       # Edit the receipt template without rebuilding the image.
       - ./backend/templates:/app/templates:ro
+      # Durable DB backups on the hermes ZFS share (separate disk from the DB).
+      - /mnt/hermes/backups/mypropmate:/app/backups
     networks:
       - mypropmate-network
 

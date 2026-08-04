@@ -32,6 +32,11 @@ class Settings(BaseSettings):
     tenants_seed_path: str = "/app/data/tenants.json"
     soffice_bin: str = "soffice"
 
+    # --- Durable DB backups (mount BACKUP_DIR to a separate/ZFS volume) ---
+    backup_dir: str = "/app/backups"
+    backup_retention: int = 14      # number of backups to keep
+    backup_interval_hours: int = 24
+
     # --- Telegram confirm-to-send flow ---
     # When enabled, a poll renders receipts and asks for confirmation in Telegram
     # instead of emailing automatically.

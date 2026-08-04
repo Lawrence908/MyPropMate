@@ -69,12 +69,49 @@ class Store:
             os.makedirs(parent, exist_ok=True)
         self.conn = sqlite3.connect(db_path)
         self.conn.row_factory = sqlite3.Row
+        # WAL + synchronous=NORMAL: crash-safe writes without fsync on every
+        # statement. WAL persists at the DB level once set.
+        self.conn.execute("PRAGMA journal_mode = WAL")
+        self.conn.execute("PRAGMA synchronous = NORMAL")
         self.conn.execute("PRAGMA foreign_keys = ON")
         self.conn.executescript(SCHEMA)
         self.conn.commit()
 
     def close(self) -> None:
         self.conn.close()
+
+    def backup_to(self, dest_path: str) -> str:
+        """Write a consistent online copy of the DB (safe while in use)."""
+        parent = os.path.dirname(dest_path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        dest = sqlite3.connect(dest_path)
+        try:
+            with dest:
+                self.conn.backup(dest)
+        finally:
+            dest.close()
+        return dest_path
+
+    def recover_failures(self) -> int:
+        """Un-block payments that failed only because the tenant wasn't seeded yet.
+
+        Deletes 'no tenant' failure rows whose sender now matches a tenant, so the
+        next poll reprocesses them. Amount-mismatch failures are left in place
+        (they need a human). Returns the number recovered.
+        """
+        rows = self.conn.execute(
+            "SELECT id, sender_name FROM payments "
+            "WHERE tenant_id IS NULL AND period LIKE 'FAILED: No tenant matches%'"
+        ).fetchall()
+        recovered = 0
+        for r in rows:
+            if self.get_tenant_by_name(r["sender_name"]):
+                self.conn.execute("DELETE FROM payments WHERE id = ?", (r["id"],))
+                recovered += 1
+        if recovered:
+            self.conn.commit()
+        return recovered
 
     # --- tenants ---------------------------------------------------------
     def upsert_tenant(
