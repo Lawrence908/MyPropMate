@@ -22,7 +22,7 @@ COPY templates/ ./templates/
 COPY data/ ./data/
 
 # Runtime dirs (mounted as volumes in compose so state persists)
-RUN mkdir -p /app/credentials /app/receipts /app/data
+RUN mkdir -p /app/credentials /app/receipts /app/data /app/backups
 
 EXPOSE 8000
 

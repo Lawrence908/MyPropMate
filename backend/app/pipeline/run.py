@@ -7,6 +7,7 @@ Usage (run from backend/, so `app.*` imports resolve):
     python -m app.pipeline.run send          # email prepped-but-unsent receipts
     python -m app.pipeline.run poll          # prep + send in one shot (auto)
     python -m app.pipeline.run tenants       # list tenants + their invoice counter
+    python -m app.pipeline.run backup        # write a timestamped DB backup now
 """
 
 from __future__ import annotations
@@ -76,12 +77,26 @@ def cmd_poll() -> int:
     return 0
 
 
+def cmd_backup() -> int:
+    from app.pipeline.backup import run_backup
+
+    settings = get_settings()
+    store = Store(settings.db_path)
+    try:
+        path = run_backup(store, settings.backup_dir, settings.backup_retention)
+    finally:
+        store.close()
+    print("backup ->", path)
+    return 0
+
+
 COMMANDS = {
     "seed": cmd_seed,
     "prep": cmd_prep,
     "send": cmd_send,
     "poll": cmd_poll,
     "tenants": cmd_tenants,
+    "backup": cmd_backup,
 }
 
 

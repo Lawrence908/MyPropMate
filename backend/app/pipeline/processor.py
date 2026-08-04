@@ -62,6 +62,11 @@ class PaymentProcessor:
         store = self._open_store()
         summary = {"scanned": 0, "processed": 0, "skipped": 0, "failed": 0, "details": []}
         try:
+            # Un-block anything that failed only because its tenant wasn't seeded
+            # yet, so a payment that arrived before its tenant can reprocess now.
+            recovered = store.recover_failures()
+            if recovered:
+                summary["details"].append({"recovered_failures": recovered})
             emails = self.imap.fetch_new_payments()
             summary["scanned"] = len(emails)
             for raw in emails:

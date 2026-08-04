@@ -19,6 +19,7 @@ from fastapi import Depends, FastAPI
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from app.config import Settings, get_settings
+from app.pipeline.backup import run_backup
 from app.pipeline.processor import PaymentProcessor
 from app.pipeline.store import Store, seed_from_json
 from app.pipeline.telegram import TelegramBot
@@ -136,13 +137,34 @@ async def lifespan(app: FastAPI):
         except Exception as exc:
             print(f"Error in poll job: {exc}")
 
+    def _do_backup() -> str:
+        st = Store(settings.db_path)
+        try:
+            return run_backup(st, settings.backup_dir, settings.backup_retention)
+        finally:
+            st.close()
+
+    async def backup_job():
+        try:
+            path = await asyncio.to_thread(_do_backup)
+            print(f"DB backup written: {path}")
+        except Exception as exc:
+            print(f"Backup failed: {exc}")
+
     scheduler.add_job(
         poll_job, "interval", minutes=settings.poll_interval_minutes,
         id="inbox_poll", replace_existing=True,
     )
+    scheduler.add_job(
+        backup_job, "interval", hours=settings.backup_interval_hours,
+        id="db_backup", replace_existing=True,
+    )
     scheduler.start()
     print(f"Started inbox polling every {settings.poll_interval_minutes} minutes "
           f"({'Telegram confirm' if bot else 'auto-send'} mode)")
+
+    # One backup on startup so there is always a fresh copy.
+    await backup_job()
 
     yield
 
