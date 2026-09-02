@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from email.header import decode_header
 from typing import List, Optional
 
-from app.pipeline.parser import is_interac_deposit
+from app.pipeline.parser import INTERAC_FROM_DOMAIN, is_interac_deposit
 
 
 @dataclass
@@ -69,19 +69,32 @@ class ImapClient:
         self.email_addr = email_addr
         self.password = password
 
+    def _search_interac(self, conn: imaplib.IMAP4_SSL) -> List[bytes]:
+        """Message ids of Interac notifications, narrowed server-side.
+
+        Falls back to scanning the whole mailbox if the server rejects the FROM
+        search, so an unusual IMAP server degrades to the old behaviour rather
+        than silently returning no payments.
+        """
+        typ, data = conn.search(None, "FROM", f'"{INTERAC_FROM_DOMAIN}"')
+        if typ != "OK":
+            typ, data = conn.search(None, "ALL")
+        if typ != "OK" or not data or not data[0]:
+            return []
+        return data[0].split()
+
     def fetch_new_payments(self, lookback: int = 40) -> List[RawEmail]:
         """Return recent Interac auto-deposit notifications from the inbox.
 
-        `lookback` bounds how many of the most recent inbox messages we scan.
+        `lookback` bounds how many of the most recent *Interac* messages we
+        scan, not inbox messages, so unrelated mail cannot push a payment out
+        of the window.
         """
         conn = imaplib.IMAP4_SSL(self.host)
         try:
             conn.login(self.email_addr, self.password)
             conn.select("INBOX")
-            typ, data = conn.search(None, "ALL")
-            if typ != "OK":
-                return []
-            ids = data[0].split()
+            ids = self._search_interac(conn)
             results: List[RawEmail] = []
             for msg_id in ids[-lookback:]:
                 typ, msg_data = conn.fetch(msg_id, "(RFC822)")
