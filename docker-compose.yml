@@ -41,8 +41,14 @@ services:
       # Durable DB backups on the hermes ZFS share (separate disk from the DB).
       - /mnt/hermes/backups/mypropmate:/app/backups
     networks:
+      # Caddy reaches this container by name on homelab-web; the host port above
+      # stays for direct LAN/Tailscale access.
+      - web
       - mypropmate-network
 
 networks:
+  web:
+    external: true
+    name: homelab-web
   mypropmate-network:
     driver: bridge
