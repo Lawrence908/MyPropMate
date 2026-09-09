@@ -21,6 +21,7 @@ Subject line:
 
 from __future__ import annotations
 
+import calendar
 import re
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -139,17 +140,38 @@ def parse_interac_email(subject: str, plaintext_body: str) -> ParsedPayment:
     )
 
 
-def derive_period(payment: ParsedPayment) -> str:
-    """Human rental period, e.g. 'August 2026'.
+# Month lookup: full names ("august") and abbreviations ("aug", "sept").
+_MONTHS = {name.lower(): i for i, name in enumerate(calendar.month_name) if name}
+_MONTHS.update({name.lower(): i for i, name in enumerate(calendar.month_abbr) if name})
+_MONTHS["sept"] = 9
 
-    Uses the transfer memo ('August 2026 rent') when present, stripping a
-    trailing 'rent'; otherwise falls back to the deposit month.
+
+def _find_month(text: str) -> Optional[int]:
+    """First recognisable month word in `text` (exact token match), else None."""
+    for token in re.findall(r"[A-Za-z]+", text or ""):
+        month = _MONTHS.get(token.lower())
+        if month:
+            return month
+    return None
+
+
+def _find_year(text: str) -> Optional[int]:
+    m = re.search(r"\b(20\d{2})\b", text or "")
+    return int(m.group(1)) if m else None
+
+
+def derive_period(payment: ParsedPayment) -> str:
+    """Normalized rental period, always 'Month YYYY' (e.g. 'August 2026').
+
+    Prefers the month/year named in the transfer memo ('Aug', 'August 2026 rent',
+    'rent for August'), so a payment made late still maps to the stated month.
+    Falls back to the deposit date, then to today.
     """
-    if payment.message:
-        cleaned = re.sub(r"\brent\b", "", payment.message, flags=re.IGNORECASE).strip()
-        cleaned = cleaned.strip(" -–—")
-        if cleaned:
-            return cleaned
-    if payment.deposit_date:
-        return payment.deposit_date.strftime("%B %Y")
-    return datetime.now().strftime("%B %Y")
+    text = payment.message or ""
+    month = _find_month(text)
+    year = _find_year(text)
+    if month is None:
+        month = payment.deposit_date.month if payment.deposit_date else datetime.now().month
+    if year is None:
+        year = payment.deposit_date.year if payment.deposit_date else datetime.now().year
+    return f"{calendar.month_name[month]} {year}"

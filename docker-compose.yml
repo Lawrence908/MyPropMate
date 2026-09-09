@@ -12,7 +12,7 @@ services:
     # NFS-backed backup dir (root-squashed) is writable.
     user: "1000:1000"
     ports:
-      - "8000:8000"
+      - "8139:8000"   # host 8139 (Applications range); container still listens on 8000
     # All secrets/config come from the repo-root .env (IMAP_*, SMTP_*, etc.).
     env_file:
       - .env
@@ -41,6 +41,11 @@ services:
       # Durable DB backups on the hermes ZFS share (separate disk from the DB).
       - /mnt/hermes/backups/mypropmate:/app/backups
     networks:
+      # LAN and Tailscale only, deliberately. This is NOT on homelab-web, so
+      # Caddy cannot reach it and there is no public route: the API has no auth
+      # of its own and holds tenant payment data, and Telegram already delivers
+      # notifications when away, so an internet-facing endpoint would be pure
+      # added surface for no use case.
       - mypropmate-network
 
 networks:

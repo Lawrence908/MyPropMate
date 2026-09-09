@@ -67,7 +67,12 @@ class Store:
         parent = os.path.dirname(db_path)
         if parent:
             os.makedirs(parent, exist_ok=True)
-        self.conn = sqlite3.connect(db_path)
+        # check_same_thread=False: a Store is built in one thread and used in
+        # another (FastAPI runs sync dependencies in a worker thread while the
+        # async endpoint runs on the event loop; asyncio.to_thread does the same
+        # for the pipeline). Each Store owns its connection for the length of one
+        # request or job, so there is no concurrent use to serialise.
+        self.conn = sqlite3.connect(db_path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         # WAL + synchronous=NORMAL: crash-safe writes without fsync on every
         # statement. WAL persists at the DB level once set.
