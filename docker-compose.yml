@@ -41,14 +41,13 @@ services:
       # Durable DB backups on the hermes ZFS share (separate disk from the DB).
       - /mnt/hermes/backups/mypropmate:/app/backups
     networks:
-      # Caddy reaches this container by name on homelab-web; the host port above
-      # stays for direct LAN/Tailscale access.
-      - web
+      # LAN and Tailscale only, deliberately. This is NOT on homelab-web, so
+      # Caddy cannot reach it and there is no public route: the API has no auth
+      # of its own and holds tenant payment data, and Telegram already delivers
+      # notifications when away, so an internet-facing endpoint would be pure
+      # added surface for no use case.
       - mypropmate-network
 
 networks:
-  web:
-    external: true
-    name: homelab-web
   mypropmate-network:
     driver: bridge
