@@ -145,7 +145,7 @@ Use the API or Supabase dashboard to add tenants:
 
 ```bash
 # Via API
-curl -X POST http://localhost:8000/api/tenants \
+curl -X POST http://localhost:8139/api/tenants \
   -H "Content-Type: application/json" \
   -d '{
     "property_id": "your-property-uuid",

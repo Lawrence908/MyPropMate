@@ -41,7 +41,7 @@ python -m app.pipeline.run tenants   # list tenants + their invoice counter
 python -m app.pipeline.run backup    # write a timestamped DB backup now
 
 # Trigger a poll immediately instead of waiting for the scheduler
-curl -X POST http://localhost:8000/api/payments/process
+curl -X POST http://localhost:8139/api/payments/process
 ```
 
 There is no test suite, linter, or formatter configured. Interactive API docs at `/docs`.

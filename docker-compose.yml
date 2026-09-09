@@ -12,7 +12,7 @@ services:
     # NFS-backed backup dir (root-squashed) is writable.
     user: "1000:1000"
     ports:
-      - "8000:8000"
+      - "8139:8000"   # host 8139 (Applications range); container still listens on 8000
     # All secrets/config come from the repo-root .env (IMAP_*, SMTP_*, etc.).
     env_file:
       - .env
