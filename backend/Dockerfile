@@ -1,3 +1,12 @@
+# --- Frontend build -----------------------------------------------------------
+FROM node:22-slim AS frontend
+WORKDIR /frontend
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci
+COPY frontend/ ./
+RUN npm run build
+
+# --- API ------------------------------------------------------------------------
 FROM python:3.11-slim
 
 WORKDIR /app
@@ -13,13 +22,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements first for caching
-COPY requirements.txt .
+COPY backend/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Application code, receipt template, and seed data
-COPY app/ ./app/
-COPY templates/ ./templates/
-COPY data/ ./data/
+# Application code and receipt template. Data (DB, tenants.json) is a volume.
+COPY backend/app/ ./app/
+COPY backend/templates/ ./templates/
+
+# Built UI, served by FastAPI at / (see FRONTEND_DIR in app/main.py)
+COPY --from=frontend /frontend/dist/ ./frontend/
 
 # Runtime dirs (mounted as volumes in compose so state persists)
 RUN mkdir -p /app/credentials /app/receipts /app/data /app/backups

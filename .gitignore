@@ -38,9 +38,16 @@ Updated_*.xlsx
 
 # Pipeline runtime data (keep the .example seed, ignore real data + outputs)
 backend/data/*.db
+backend/data/*.db-wal
+backend/data/*.db-shm
 backend/data/tenants.json
+# Private property documents (leases, scopes of work, IDs). The repo is public.
+backend/data/documents/
 receipts/
 backend/receipts/
 
 # Old files
 *.lnk
+
+# Playwright MCP screenshots and snapshots
+.playwright-mcp/

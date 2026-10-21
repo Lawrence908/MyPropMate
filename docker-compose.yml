@@ -4,8 +4,9 @@ services:
   # ===================
   mypropmate-api:
     build:
-      context: ./backend
-      dockerfile: Dockerfile
+      # Repo root, so the image can build the frontend as well as the backend.
+      context: .
+      dockerfile: backend/Dockerfile
     container_name: mypropmate-api
     restart: unless-stopped
     # Run as the host user so bind-mounted data/receipts stay chris-owned and the

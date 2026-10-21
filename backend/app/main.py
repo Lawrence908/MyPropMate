@@ -12,10 +12,13 @@ calls are offloaded to worker threads.
 """
 
 import asyncio
+import os
 from contextlib import asynccontextmanager
 from typing import Optional
 
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, HTTPException
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from app.config import Settings, get_settings
@@ -23,6 +26,8 @@ from app.pipeline.backup import run_backup
 from app.pipeline.processor import PaymentProcessor
 from app.pipeline.store import Store, seed_from_json
 from app.pipeline.telegram import TelegramBot
+from app.portfolio import store as portfolio_store
+from app.portfolio.routes import router as portfolio_router
 
 
 scheduler = AsyncIOScheduler()
@@ -108,6 +113,7 @@ async def lifespan(app: FastAPI):
     try:
         n = seed_from_json(store, settings.tenants_seed_path)
         print(f"Seeded/updated {n} tenants from {settings.tenants_seed_path}")
+        portfolio_store.ensure_schema(store.conn)
     finally:
         store.close()
 
@@ -181,9 +187,10 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="MyPropMate API",
     description="Rent receipt automation (IMAP -> Excel/PDF -> SMTP)",
-    version="0.3.0",
+    version="0.4.0",
     lifespan=lifespan,
 )
+app.include_router(portfolio_router)
 
 
 @app.get("/health")
@@ -191,16 +198,16 @@ async def health_check():
     return {"status": "healthy", "service": "mypropmate-api"}
 
 
-@app.get("/")
-async def root():
-    return {"name": "MyPropMate API", "version": "0.3.0", "docs": "/docs"}
+@app.get("/api")
+async def api_root():
+    return {"name": "MyPropMate API", "version": "0.4.0", "docs": "/docs"}
 
 
 @app.get("/api/tenants")
 async def list_tenants(store: Store = Depends(get_store)):
     rows = store.conn.execute(
-        "SELECT display_name, monthly_rent, parking_fee, phone, email, last_invoice_no "
-        "FROM tenants ORDER BY display_name"
+        "SELECT id, display_name, monthly_rent, parking_fee, phone, email, "
+        "last_invoice_no, property_id FROM tenants ORDER BY display_name"
     ).fetchall()
     return [dict(r) for r in rows]
 
@@ -208,9 +215,11 @@ async def list_tenants(store: Store = Depends(get_store)):
 @app.get("/api/payments")
 async def list_payments(store: Store = Depends(get_store)):
     rows = store.conn.execute(
-        "SELECT reference_number, sender_name, amount, period, payment_date, "
-        "invoice_no, receipt_path, emailed, created_at "
-        "FROM payments ORDER BY created_at DESC"
+        "SELECT p.reference_number, p.sender_name, p.amount, p.period, p.payment_date, "
+        "p.invoice_no, p.receipt_path, p.emailed, p.created_at, p.tenant_id, "
+        "t.display_name AS tenant_name, t.property_id "
+        "FROM payments p LEFT JOIN tenants t ON t.id = p.tenant_id "
+        "ORDER BY p.created_at DESC"
     ).fetchall()
     return [dict(r) for r in rows]
 
@@ -233,3 +242,52 @@ async def trigger_payment_processing():
         return {"status": "prepped", "mode": "telegram-confirm"}
     result = await asyncio.to_thread(processor.process_new_payments)
     return {"status": "processed", "result": result}
+
+
+@app.get("/api/payments/{reference_number}/receipt")
+async def get_receipt(
+    reference_number: str,
+    settings: Settings = Depends(get_settings),
+    store: Store = Depends(get_store),
+):
+    """Serve the rendered receipt so it can be checked before confirming."""
+    row = store.conn.execute(
+        "SELECT receipt_path FROM payments WHERE reference_number = ?", (reference_number,)
+    ).fetchone()
+    if row is None or not row["receipt_path"]:
+        raise HTTPException(404, "no receipt for that reference")
+    path = os.path.realpath(row["receipt_path"])
+    # Only ever serve files from the receipts directory.
+    if not path.startswith(os.path.realpath(settings.receipts_dir) + os.sep) or not os.path.exists(path):
+        raise HTTPException(404, "receipt file missing")
+    media = "application/pdf" if path.endswith(".pdf") else "application/octet-stream"
+    return FileResponse(path, media_type=media, filename=os.path.basename(path),
+                        content_disposition_type="inline")
+
+
+@app.post("/api/payments/{reference_number}/send")
+async def send_payment_receipt(reference_number: str):
+    """Browser equivalent of the Telegram "Confirm & Send" button."""
+    processor: PaymentProcessor = app.state.processor
+    return await asyncio.to_thread(processor.send_one, reference_number)
+
+
+# --- Frontend ------------------------------------------------------------------------
+# The built React app is copied to FRONTEND_DIR in the image. Anything that is
+# not an API route falls through to index.html so client-side routes work on
+# refresh. Registered last so it never shadows an API path.
+_frontend_dir = os.environ.get("FRONTEND_DIR", "/app/frontend")
+if os.path.isdir(_frontend_dir):
+    _assets = os.path.join(_frontend_dir, "assets")
+    if os.path.isdir(_assets):
+        app.mount("/assets", StaticFiles(directory=_assets), name="assets")
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    async def spa(full_path: str):
+        if full_path.startswith(("api/", "docs", "openapi.json", "health")):
+            raise HTTPException(404, "not found")
+        candidate = os.path.realpath(os.path.join(_frontend_dir, full_path))
+        if full_path and candidate.startswith(os.path.realpath(_frontend_dir) + os.sep) \
+                and os.path.isfile(candidate):
+            return FileResponse(candidate)
+        return FileResponse(os.path.join(_frontend_dir, "index.html"))

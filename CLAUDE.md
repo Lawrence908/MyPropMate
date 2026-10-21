@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A FastAPI service that automates rent receipts. It polls a Gmail inbox over IMAP for Interac
+A FastAPI service with a React UI for managing rental properties. Its core automates rent receipts. It polls a Gmail inbox over IMAP for Interac
 e-Transfer deposit notifications, parses each one, matches the sender to a tenant in a local
 SQLite DB, validates the amount, fills a design-heavy Excel receipt template, renders it to PDF
 with headless LibreOffice, and emails it to the tenant over SMTP.
@@ -14,6 +14,10 @@ There are two operating modes, chosen by `TELEGRAM_ENABLED`:
 - **Telegram off:** a poll preps and emails receipts automatically.
 - **Telegram on (current production setting):** a poll preps receipts and posts each to Telegram
   with Confirm/Hold buttons. Nothing is emailed until you tap "Confirm & Send".
+
+Around the receipt pipeline is a portfolio layer driven by the web UI: properties, household
+tasks (maintenance, vendor work, sale prep), leasing leads with drafted messages, listing posts per
+venue, and reusable message templates. Every portfolio row hangs off a `property_id`.
 
 `rent-receipts.json` in the repo root is the original n8n workflow export. It remains the
 reference for the Interac parsing regexes and the validation tolerance. Consult it when changing
@@ -42,9 +46,14 @@ python -m app.pipeline.run backup    # write a timestamped DB backup now
 
 # Trigger a poll immediately instead of waiting for the scheduler
 curl -X POST http://localhost:8139/api/payments/process
+
+# Frontend dev server (proxies /api to the container on :8139)
+cd frontend && npm install && npm run dev     # http://localhost:5173
+cd frontend && npm run build                  # tsc + vite build, also the only type check
 ```
 
-There is no test suite, linter, or formatter configured. Interactive API docs at `/docs`.
+There is no test suite or formatter configured. `npm run build` is the frontend type check.
+Interactive API docs at `/docs`. The UI is served from `/` by the same container.
 
 Local runs need the `IMAP_*`, `SMTP_*`, and `TELEGRAM_*` values in the environment. `Settings`
 also reads a `.env` in the current working directory. The file and DB paths default to container
@@ -65,9 +74,20 @@ POST /api/payments/process                          ─┴─> PaymentProcessor.
 Telegram tap "Confirm & Send" ──> PaymentProcessor.send_one(ref) ──> Mailer.send_receipt()
 ```
 
-- `backend/app/main.py`: all routes (no routers), the APScheduler poll and backup jobs, and the
-  Telegram long-poll listener. Routes are `GET /health`, `GET /`, `GET /api/tenants`,
-  `GET /api/payments`, `POST /api/tenants/reseed`, `POST /api/payments/process`. None take a body.
+- `backend/app/main.py`: the receipt routes, the APScheduler poll and backup jobs, the Telegram
+  long-poll listener, and the SPA fallback that serves the built UI. Receipt routes are
+  `GET /health`, `GET /api`, `GET /api/tenants`, `GET /api/payments`, `POST /api/tenants/reseed`,
+  `POST /api/payments/process`, `GET /api/payments/{ref}/receipt`, `POST /api/payments/{ref}/send`
+  (the browser twin of Telegram Confirm, via `send_one`).
+- `backend/app/portfolio/store.py`: schema and generic CRUD for `properties`, `tasks`,
+  `prospects`, `messages`, `posts`, `templates`, plus the allowed status lists (`FIELDS` is the
+  per-table write whitelist).
+- `backend/app/portfolio/routes.py`: `APIRouter` under `/api` with uniform CRUD per table
+  (`GET/POST /x`, `POST /x/bulk`, `GET/PATCH/DELETE /x/{id}`), `/api/meta`, `/api/overview`,
+  tenant-to-property assignment, and the message draft/send flow.
+- `frontend/`: React + Vite + TypeScript, `react-router-dom`, no UI library. `src/api.ts` holds
+  the types and fetch wrapper, `src/hooks.ts` the app context (selected property, toasts),
+  `src/components.tsx` the shared form/modal pieces, `src/pages/` one file per screen.
 - `backend/app/pipeline/processor.py`: the only place business rules live. Tenant matching, amount
   validation, the `ValidationError` type, failure recording, and `send_one`.
 - `backend/app/pipeline/imap_client.py`: IMAP login and the server-side Interac search. Writes
@@ -142,6 +162,21 @@ not. It is best-effort and never blocks the pipeline.
 and answers the callback, but prints only on listener-level exceptions. Do not diagnose the
 confirm flow from container logs alone; check the `emailed` column.
 
+**Nothing outbound leaves without a click.** Lead messages are created as `draft`.
+`POST /api/messages/{id}/send` emails only when the message channel is `email` and the lead's
+`contact` holds an address, and marks it `sent` only after SMTP accepts. For Facebook, text, and
+the rest it just records that you sent it yourself. The app never posts to or reads from Facebook;
+it prepares text to copy. Keep it that way.
+
+**`tenants.property_id` is DB-owned.** It is the one column the portfolio layer adds to the
+receipt tables (via `ALTER TABLE` in `ensure_schema`). `upsert_tenant` never writes it, so the
+assignment set in the UI survives the constant JSON re-seed, like the invoice counter. Deleting a
+property nulls it rather than deleting tenants.
+
+**The repo is public.** Property addresses, tenant details, leads, leases and other documents live
+only in the DB or `backend/data/documents/` (gitignored). Do not commit real data or seed scripts
+containing it.
+
 **Dead legacy code is still in the tree.** `app/services/` (`gmail_watcher.py`,
 `invoice_ninja.py`, `payment_processor.py`), `app/db/supabase.py`, and `app/models/schemas.py`
 are the earlier Gmail-OAuth / Supabase / Invoice Ninja implementation. Nothing in `app/main.py`
@@ -156,7 +191,11 @@ workflow; the live one is `backend/templates/rental_receipt_template.xlsx`.
 
 ## Deployment context
 
-Runs on the daedalus homelab host on port 8000. The image installs `libreoffice-calc` and
+Runs on the daedalus homelab host, host port 8139 (container 8000), reachable over LAN and
+Tailscale only: no auth, no Caddy route. The image is multi-stage: a Node stage builds `frontend/`
+and the result is copied to `/app/frontend`, which `main.py` serves (override with
+`FRONTEND_DIR`). Compose builds from the repo root with `backend/Dockerfile`; `.dockerignore`
+keeps data and secrets out of the context. The image installs `libreoffice-calc` and
 `fonts-liberation` for PDF rendering. Compose runs the container as `1000:1000` so bind-mounted
 data stays chris-owned and the NFS-backed backup directory stays writable.
 
@@ -164,7 +203,7 @@ Volumes:
 
 | Host | Container | Contents |
 |------|-----------|----------|
-| `./backend/data` | `/app/data` | SQLite DB and `tenants.json` |
+| `./backend/data` | `/app/data` | SQLite DB, `tenants.json`, private `documents/` |
 | `./receipts` | `/app/receipts` | Generated `.xlsx` and `.pdf` receipts |
 | `./backend/templates` | `/app/templates` (ro) | Receipt template |
 | `/mnt/hermes/backups/mypropmate` | `/app/backups` | Durable DB backups on ZFS |

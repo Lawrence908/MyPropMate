@@ -1,0 +1,16 @@
+# Build context is the repo root. Keep runtime data and secrets out of the image.
+.git
+.env
+.env.*
+credentials/
+receipts/
+backend/receipts/
+backend/data/
+backend/venv/
+**/__pycache__
+frontend/node_modules
+frontend/dist
+*.xlsx
+!backend/templates/*.xlsx
+docs/
+prompts/
